@@ -33,18 +33,31 @@ def get_hdf5_resources(filename):
     for dset_name in dset_names:
         dset_name = dset_name.replace('/table', '')
         if 'spatial' in filename:
-            loc, res, feed = dset_name.split('/')
-            description = (
-                f'Cumulated load of active and reactive power over all objects'
-                f' classified as {loc} in the temporal resolution of {res} '
-                'for the feed {feed}.'
-            )
+            try:
+                loc, res, feed = dset_name.split('/')
+                description = (
+                    f'Cumulated load of active and reactive power over all '
+                    f'objects classified as {loc} in the temporal resolution '
+                    f'of {res} for the feed {feed}.'
+                )
+            # substation has less layers
+            except ValueError:
+                loc, res = dset_name.split('/')
+                description = (
+                    'Cumulated load of active and reactive power of the object'
+                    f' {loc} in the temporal resolution of {res}.'
+                )
             unit = dict(
                 P='W',
                 Q='VAR'
             )
         else:
-            loc, obj, feed = dset_name.split('/')
+            try:
+                loc, obj, feed = dset_name.split('/')
+            # PV has more layers
+            except ValueError:
+                loc, obj, feed1, feed2, feed3 = dset_name.split('/')
+                feed = '_'.join([feed1, feed2, feed3])
             description = (
                 f'Electrical properties of the feed {feed} in object {obj} '
                 f'classified as {loc}.'
@@ -91,9 +104,9 @@ def create_metadata(folder):
     '''
     resources = []
     for filename in os.listdir(folder):
-        if not filename.startswith('data' and filename.endswith('.hdf5')):
+        if not (filename.startswith('data') and filename.endswith('.hdf5')):
             continue
-        resources.append(get_hdf5_resources(filename))
+        resources.append(get_hdf5_resources(os.path.join(folder, filename)))
     name = 'WPuQ household and heat pump electric load profiles'
     idd = 'Daten DOI'
     licenses = list(
@@ -152,8 +165,7 @@ def create_metadata(folder):
         created=created,
         resources=resources
     )
-    json_filename = os.path.join(os.path.split(filename)[0],
-                                 'datapackage.json')
+    json_filename = os.path.join(folder, 'datapackage.json')
     with open(json_filename, 'w') as fp:
         json.dump(metadata, fp)
 
