@@ -122,7 +122,7 @@ def create_metadata(folder):
             organization='Institute for Solar Energy Research in Hamelin'
         )]
     )
-    documentation = 'URL to energies paper'
+    documentation = 'URL to paper'
     spatial = dict(
         location='Lower Saxony, Germany',
         resolution='single-family houses'
