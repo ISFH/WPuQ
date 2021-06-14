@@ -318,18 +318,34 @@ class Dataprocessor():
         name_exclude = ['HS1', 'PV1', 'WS1', 'WEATHER_ISFH']
         target_filename = os.path.join(folder_res, 'data_spatial.hdf5')
         included = dict(
-            WITH_PV={
-                '10s': [],
-                '1min': [],
-                '15min': [],
-                '60min': []
-            },
-            NO_PV={
-                '10s': [],
-                '1min': [],
-                '15min': [],
-                '60min': []
-            },
+            WITH_PV=dict(
+                HOUSEHOLD={
+                    '10s': [],
+                    '1min': [],
+                    '15min': [],
+                    '60min': []
+                },
+                HEATPUMP={
+                    '10s': [],
+                    '1min': [],
+                    '15min': [],
+                    '60min': []
+                },
+            ),
+            NO_PV=dict(
+                HOUSEHOLD={
+                    '10s': [],
+                    '1min': [],
+                    '15min': [],
+                    '60min': []
+                },
+                HEATPUMP={
+                    '10s': [],
+                    '1min': [],
+                    '15min': [],
+                    '60min': []
+                },
+            ),
         )
         for source_file in os.listdir(folder_res):
             if not (source_file.startswith('data')
@@ -380,9 +396,9 @@ class Dataprocessor():
                     elif 'WITH_PV' in dset_name_orig:
                         dset_name_new = 'WITH_PV' + '/' + dset_name_new
                 # save what profiles are included in each aggregation
-                group = dset_name_orig.split('/')[0]
-                if group in included.keys() and 'HOUSEHOLD' in dset_name_orig:
-                    included[group][temp_res].append(
+                group, obj, feed = dset_name_orig.split('/')
+                if group in included.keys():
+                    included[group][feed][temp_res].append(
                         dset_name_orig.split('/')[1])
                 # we need to append columns which pytables does not
                 # support natively. Therefore, read the existing data,
@@ -405,12 +421,14 @@ class Dataprocessor():
         file.visititems(visitor)
         dset_names = visitor.names
         for dset_name in dset_names:
-            group = dset_name.split('/')[0]
+            try:
+                group, res, feed, table = dset_name.split('/')
+            except ValueError:
+                continue
             if not group in included.keys():
                 continue
-            res = dset_name.split('/')[1]
             file[dset_name].attrs.create(
-                name='objects_included', data=included[group][res])
+                name='objects_included', data=included[group][feed][res])
         file.close()
 
     def prove_consistency(self, folder, corrections):
@@ -470,8 +488,7 @@ class Dataprocessor():
             validation['ts_abs'].values(), keys=validation['ts_abs'].keys(),
             axis=1
         )
-        self.compare_timeseries(validation['ts_abs'], kind='hexbin',
-                                strfile=val_dir)
+        self.compare_timeseries(validation['ts_abs'], strfile=val_dir)
 
         # absolute hourly sums for power and energy
         validation['hs_abs'] = pd.concat(
