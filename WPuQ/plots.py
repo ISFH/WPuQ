@@ -246,6 +246,12 @@ class WPuQPlots():
         df = df.replace(str_to_numeric)
         prcnt_avail = df.apply(pd.value_counts).fillna(0).loc[4] / len(df)
         df = df.resample('3min').min().T
+        # sort the rows alphanumerically by building number
+        df['building_nr'] = df.index.str.split('(\d+)').str[1].astype(int)
+        df = df.sort_values(by='building_nr', ascending=False).drop(
+            'building_nr', axis=1)
+        prcnt_avail = prcnt_avail.reindex(df.index)
+        df.columns = pd.to_datetime(df.columns)
         # plot
         fig, (ax2, ax) = plt.subplots(
             nrows=1,
@@ -625,9 +631,10 @@ class WPuQPlots():
             plt.show()
 
 
-    def plot_seasonal_load_curves(self, folder, objects, feed, res,
-                                  correct_pv=True, plot_slp=False,
-                                  use_average=False, figtitle=False):
+    def plot_seasonal_load_curves(
+            self, folder, objects, feed, res, sum_dsets=False,
+            correct_pv=True, plot_slp=False, use_average=False,
+            figtitle=False):
         '''
         Plot seasonal load curves
 
@@ -642,6 +649,10 @@ class WPuQPlots():
             The feed to plot. Has to be one of ('HOUSEHOLD', 'HEATPUMP')
         res : str
             The temporal resolution to plot
+        sum_dsets : bool
+            Plots the different datasets in seperate plots if this is False.
+            Builds a sum over all datasets and plots it in a single plot if
+            this is True. The default is False.
         correct_pv : bool
             If the dataset contains houses with PV production and this is
             False, this function plots both the measured load, which is real
@@ -706,6 +717,17 @@ class WPuQPlots():
                 profile = profile['P_TOT']
             else:
                 profile = profile[['P_TOT', 'P_TOT_WITH_PV']]
+            if sum_dsets:
+                if dset_name == dset_names[0]:
+                    profile_tot = pd.DataFrame(profile.copy()).sum(axis=1)
+                else:
+                    profile_tot = profile_tot + pd.DataFrame(profile).sum(
+                        axis=1)
+                if dset_name != dset_names[-1]:
+                    continue
+                else:
+                    dset_name = 'WITH_AND_NO_PV' + res + '/' + feed
+                    profile = profile_tot
             if use_average:
                 try:
                     n_objs = len(
@@ -713,6 +735,12 @@ class WPuQPlots():
                     profile = profile / n_objs
                 except KeyError:
                     pass
+                if 'WITH_AND_NO_PV' in dset_name:
+                    n_objs = 0
+                    for dn in dset_names:
+                        n_objs += len(
+                            file[dn + '/table'].attrs['objects_included'])
+                    profile = profile / n_objs
             profile.index = profile.index.tz_localize(
                 'Europe/Berlin', nonexistent='shift_forward', ambiguous='NaT')
             day_name = profile.index.day_name()
@@ -728,8 +756,9 @@ class WPuQPlots():
                     slp_name = 'h0'
                 elif feed == 'HEATPUMP':
                     slp_name = 'BDEW HP'
-                slp = e_slp.get_profile(
-                    {slp_name: profile.sum() / 360 * 4})[slp_name]
+                ann_cons = profile.sum() / 360
+                slp = e_slp.get_profile({slp_name: ann_cons * 4})[slp_name]
+                print(f'Annual consumption: {ann_cons / 1e3} kWh')
                 slp = slp.groupby(
                     [day_name[::90], season[::90], slp.index.time]).mean()
                 slp = slp.unstack(2)
@@ -834,3 +863,318 @@ class WPuQPlots():
             plt.savefig(strfile, bbox_inches='tight', dpi=300)
             plt.close()
         file.close()
+
+    def plot_annual_consumption(self, folder, strfile=None):
+        '''
+        Plots the annual electricity consumption per object, seperated by
+        household and heat pump.
+
+        Parameters
+        ----------
+        folder : str
+            The folder where the xlsx file containing the annual consumption
+            is stored.
+        strfile : str, optional
+            The path where the plot should be stored. If strfile is a directory,
+            the plot is stored in that directory under an auto-generated name.
+            If strfile is None, the plot is shown instead of saved. The default
+            is None.
+
+        Returns
+        -------
+
+        '''
+        feeds = ['HOUSEHOLD', 'HEATPUMP']
+        df = pd.read_excel(os.path.join(
+            folder, 'validation', 'ys_abs_per_node.xlsx'))
+        df = df[df['feed'].isin(feeds)]
+        df['building_nr'] = df['obj'].str.split('(\d+)').str[1].astype(int)
+        df = df.sort_values(by='building_nr').drop('building_nr', axis=1)
+        # plot
+        fig, ax = plt.subplots(figsize=(16, 9))
+        width = 0.8
+        vals = [df.loc[df['feed'] == feed, 0].to_numpy() for feed in feeds]
+        labels = df.loc[df['feed'] == 'HOUSEHOLD', 'obj'].to_numpy()
+        n = len(vals)
+        _labels = np.arange(len(labels))
+        for i in range(n):
+            ax.bar(_labels - width / 2. + i / float(n) * width, vals[i],
+                    width=width / float(n), align='edge', label=feeds[i]
+            )   
+        plt.xticks(_labels, labels, rotation=90)
+        ax.tick_params(axis='y', rotation=30)
+        ax.tick_params(axis='x', labelsize=20)
+        ax.set_xlim(0 - width, len(vals[0]) - 1 + width)
+        ax.set_ylabel('Annual consumption in kWh/a')
+        plt.legend()
+        if strfile:
+            if os.path.isdir(strfile):
+                strfile = os.path.join(strfile, 'annual_consumption.png')
+            if os.path.isfile(strfile):
+                os.remove(strfile)
+            plt.savefig(strfile, bbox_inches='tight')
+            plt.close()
+        else:
+            plt.show()
+
+    def plot_daily_for_report(self, folder, language='de', strfile=None):
+        '''
+        Plots the active and apparent power of the transformer together with
+        the outside temperature and the temperature in the district heating
+        network for the WPuQ final report.
+
+        Parameters
+        ----------
+        folder : TYPE
+            The folder where the hdf5 files containing the data can be found
+        language : str
+            The language of the legend and axis titles.
+            Must be one of {'de', 'en'}. The default is de
+        strfile : str, optional
+            The path where the plot should be stored. If strfile is a directory,
+            the plot is stored in that directory under an auto-generated name.
+            If strfile is None, the plot is shown instead of saved. The default
+            is None.
+
+        Returns
+        -------
+
+        '''
+        translation = dict(
+            vorlauf=dict(
+                en='Network flow temperature',
+                de='Netzvorlauftemperatur'
+            ),
+            außen=dict(
+                en='Ambient temperature',
+                de='Außentemperatur'
+            ),
+            blind=dict(
+                en='Reactive energy',
+                de='Blindenergie'
+            ),
+            wirk=dict(
+                en='Active energy',
+                de='Wirkenergie'
+            ),
+            y1=dict(
+                en='Energy in kWh/day',
+                de='Energie [kWh/Tag]'
+            ),
+            y2=dict(
+                en='Temperature in °C',
+                de='Temperatur [°C]'
+            )
+        )
+        # get transformer data
+        source_file = 'data_60min.hdf5'
+        dset_name = 'MISC/ES1/TRANSFORMER'
+        columns = ['P_TOT', 'Q_TOT']
+        transformer = pd.read_hdf(
+            os.path.join(folder, source_file), dset_name, columns=columns)
+        transformer = transformer.resample('D').mean() / 1e3 * 24
+        transformer[transformer < 0] = 0
+        # get district heating data
+        source_file = 'dh_grid.hdf5'
+        dset_name = 'DH_GRID/IN/HEAT_TEMPERATURE_FLOW'
+        dh = pd.read_hdf(os.path.join(folder, source_file), dset_name)
+        dh = dh.resample('D').mean()
+        # get temperature data
+        source_file = 'weather.hdf5'
+        dset_name = 'WEATHER_SERVICE/IN/WEATHER_TEMPERATURE_TOTAL'
+        weather = pd.read_hdf(os.path.join(folder, source_file), dset_name)
+        weather = weather.resample('D').mean()
+        # total data
+        data = pd.concat([transformer, dh, weather], axis=1)
+        data = data[data['P_TOT'].notna()]
+        # plot
+        fig, ax = plt.subplots(figsize=(16, 9))
+        ax2 = ax.twinx()
+        data[['Q_TOT', 'P_TOT']].plot(
+            ax=ax, color=['navy', 'royalblue'], kind='area', stacked=True)
+        data['TEMPERATURE:FLOW'].plot(
+            ax=ax2, label=translation['vorlauf'][language], color='red')
+        data['TEMPERATURE:TOTAL'].plot(
+            ax=ax2, label=translation['außen'][language], color='yellow')
+        lines, labels = ax.get_legend_handles_labels()
+        labels = [translation['blind'][language], translation['wirk'][language]]
+        lines2, labels2 = ax2.get_legend_handles_labels()
+        ax.legend(lines + lines2, labels + labels2, loc='best')
+        ax.set_ylabel(translation['y1'][language])
+        ax.set_xlabel('')
+        ax2.set_ylabel(translation['y2'][language])
+        # move ylim so that legend is visible
+        ax2.set_ylim(top=35)
+        if strfile:
+            if os.path.isdir(strfile):
+                strfile = os.path.join(strfile, 'daily_plot_wpuq_report.png')
+            if os.path.isfile(strfile):
+                os.remove(strfile)
+            plt.savefig(strfile, bbox_inches='tight')
+            plt.close()
+        else:
+            plt.show()
+
+    def plot_annual_consumption_heat_pump_for_report(
+            self, folder, method, strfile=None):
+        '''
+        Detects three operation modes (heat pump, heating rod and pumps only)
+        from the heat pump load curve.
+
+        Parameters
+        ----------
+        folder : str
+            The home folder containing both the validation and resampled
+            folder.
+        method : str
+            The method used to seperate heating rod from heat pump operation
+        strfile : str
+            Plots the data if a path to save a plot is given.
+            The default is None.
+
+        Returns
+        -------
+
+        '''
+
+        print(dt.now().strftime("%m/%d/%Y, %H:%M:%S") + ' Detecting heat pump '
+              'operation modes.')
+        total = pd.DataFrame(index=['obj', 'Kompressorbetrieb',
+                                    'Heizstabbetrieb', 'Stand-By-Betrieb'])
+        missing = pd.Series(name='missing')
+        filename = os.path.join(folder, 'data_10s.hdf5')
+        file = h5py.File(filename, 'r')
+        visitor = H5ls()
+        file.visititems(visitor)
+        dset_names = visitor.names
+        for dset_name in dset_names:
+            if not 'HEATPUMP' in dset_name:
+                continue
+            obj = dset_name.split('/')[1]
+            missing.loc[obj] = 1
+            print(dt.now().strftime("%m/%d/%Y, %H:%M:%S") + '\t ' + obj)
+            profile = pd.read_hdf(filename, dset_name).set_index('index')
+            profile.index = pd.to_datetime(profile.index)
+            # mark buildings with nans. Special treatment for 2018
+            if '2018' in folder:
+                if profile.loc[profile.index.month > 5, 'S_TOT'].isna().any():
+                    missing.loc[obj] = 0.5
+            else:
+                if profile['S_TOT'].isna().any():
+                    missing.loc[obj] = 0.5
+            # assumption that a heat pump consumption larger than 3 kW
+            # means heating rod operation
+            if method == 'larger 3kW':
+                profile = profile[['S_TOT']]
+                profile.loc[profile['S_TOT'] < 3000, 'operation_mode'] = \
+                    'Kompressorbetrieb'
+            # assumption that the heating rod is an ohmic resistor, meaning
+            # that apparent and active power are equal if the heat pump
+            # runs in heating rod operation mode
+            elif method == 'Power Factor':
+                profile = profile[['P_TOT', 'S_TOT']]
+                profile.loc[
+                    (profile['S_TOT'] - profile['P_TOT']) > 10,
+                    'operation_mode'] = 'Kompressorbetrieb'
+            # assumption that consumption < 100 W is pumps only
+            profile.loc[profile['S_TOT'] < 100, 'operation_mode'] = \
+                'Stand-By-Betrieb'
+            profile['operation_mode'].fillna('Heizstabbetrieb', inplace=True)
+            profile = profile.groupby('operation_mode').sum()
+            profile.loc['obj'] = obj
+            total = pd.concat([total, profile['S_TOT']], axis=1)
+        total = total.T.reset_index(drop=True)
+        total = total.set_index('obj')
+        total = total.merge(missing, left_index=True, right_index=True)
+        total['building_nr'] = total.index.str.split('(\d+)').str[1].astype(int)
+        total = total.sort_values(by='building_nr', ascending=True).set_index(
+            'building_nr')
+        cols = ['Stand-By-Betrieb', 'Kompressorbetrieb', 'Heizstabbetrieb']
+        total[cols] = total[cols] / 360 / 1e6
+        # plot
+        colors = ['gainsboro', 'yellowgreen', 'orangered']
+        fig, ax = plt.subplots(figsize=(16, 9))
+        total.loc[total['missing'] == 1, cols].plot(
+            ax=ax, kind='bar', stacked=True, color=colors)
+        handles, labels = ax.get_legend_handles_labels()
+        ax.legend(handles[::-1], labels[::-1], loc='best')
+        ax.set_ylabel('Energie [MWh/a]')
+        ax.set_xlabel('Gebäudenummer')
+        ax.tick_params(axis='x', rotation=90)
+        if strfile:
+            if os.path.isdir(strfile):
+                strfile = os.path.join(
+                    strfile, 'heat_pump_operation_wpuq_report.png')
+            if os.path.isfile(strfile):
+                os.remove(strfile)
+            plt.savefig(strfile, bbox_inches='tight', dpi=300)
+            plt.close()
+
+    def plot_annual_consumption_household_for_report(
+            self, folder, strfile=None):
+        '''
+        Plots the annual household consumption.
+
+        Parameters
+        ----------
+        folder : str
+            The home folder containing both the validation and resampled
+            folder.
+        strfile : str
+            Plots the data if a path to save a plot is given.
+            The default is None.
+
+        Returns
+        -------
+
+        '''
+
+        print(dt.now().strftime("%m/%d/%Y, %H:%M:%S")
+              + ' Plotting annual household consumption.')
+        total = pd.Series(name='Haushalt')
+        missing = pd.Series(name='missing')
+        filename = os.path.join(folder, 'data_10s.hdf5')
+        file = h5py.File(filename, 'r')
+        visitor = H5ls()
+        file.visititems(visitor)
+        dset_names = visitor.names
+        for dset_name in dset_names:
+            if not 'HOUSEHOLD' in dset_name:
+                continue
+            obj = dset_name.split('/')[1]
+            missing.loc[obj] = 1
+            print(dt.now().strftime("%m/%d/%Y, %H:%M:%S") + '\t ' + obj)
+            profile = pd.read_hdf(filename, dset_name).set_index('index')
+            profile.index = pd.to_datetime(profile.index)
+            # mark buildings with nans. Special treatment for 2018
+            if '2018' in folder:
+                if profile.loc[profile.index.month > 5, 'S_TOT'].isna().any():
+                    missing.loc[obj] = 0.5
+            else:
+                if profile['S_TOT'].isna().any():
+                    missing.loc[obj] = 0.5
+            total.loc[obj] = profile['S_TOT'].sum()
+        total = pd.concat([total, missing], axis=1)
+        total['building_nr'] = total.index.str.split('(\d+)').str[1].astype(int)
+        total = total.sort_values(by='building_nr', ascending=True).set_index(
+            'building_nr')
+        cols = ['Haushalt']
+        total[cols] = total[cols] / 360 / 1e6
+        # plot
+        colors = ['darkgrey']
+        fig, ax = plt.subplots(figsize=(16, 9))
+        total.loc[total['missing'] == 1, cols].plot(
+            ax=ax, kind='bar', stacked=True, color=colors)
+        handles, labels = ax.get_legend_handles_labels()
+        ax.legend(handles[::-1], labels[::-1], loc='best')
+        ax.set_ylabel('Energie [MWh/a]')
+        ax.set_xlabel('Gebäudenummer')
+        ax.tick_params(axis='x', rotation=90)
+        if strfile:
+            if os.path.isdir(strfile):
+                strfile = os.path.join(
+                    strfile, 'household_operation_wpuq_report.png')
+            if os.path.isfile(strfile):
+                os.remove(strfile)
+            plt.savefig(strfile, bbox_inches='tight', dpi=300)
+            plt.close()

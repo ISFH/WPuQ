@@ -30,6 +30,24 @@ def get_hdf5_resources(filename):
     path = os.path.split(filename)[-1]
     profile = 'data-resource'
     fields = list()
+    units = dict(
+        weather={
+            'APPARENT_TEMPERATURE_TOTAL': '°C',
+            'ATMOSPHERIC_PRESSURE_TOTAL': 'mbar',
+            'PRECIPITATION_RATE_TOTAL': 'mm',
+            'PROBABILITY_OF_PRECIPITATION_TOTAL': '%',
+            'RELATIVE_HUMIDITY_TOTAL': '%',
+            'SOLAR_IRRADIANCE_GLOBAL': 'W/m2',
+            'TEMPERATURE_TOTAL': '°C',
+            'WIND_DIRECTION_TOTAL': '°',
+            'WIND_GUST_SPEED_TOTAL': 'm/s',
+            'WIND_SPEED_TOTAL': 'm/s'
+        },
+        district_heating={
+            'HEAT_TEMPERATURE_FLOW': '°C',
+            'HEAT_TEMPERATURE_RETURN': '°C'
+        }
+    )
     for dset_name in dset_names:
         dset_name = dset_name.replace('/table', '')
         if 'spatial' in filename:
@@ -51,6 +69,16 @@ def get_hdf5_resources(filename):
                 P='W',
                 Q='VAR'
             )
+        elif 'weather' in filename:
+            service, direct, param_long = dset_name.split('/')
+            param = param_long.split('_', 1)[1]
+            description = (f'Timeseries of the weather parameter {param}.')
+            unit = units['weather'][param]
+        elif 'district_heating' in filename:
+            service, direct, param = dset_name.split('/')
+            description = ('Timeseries in the district heating grid of '
+                           f' parameter {param}.')
+            unit = units['district_heating'][param]
         else:
             try:
                 loc, obj, feed = dset_name.split('/')
@@ -70,7 +98,7 @@ def get_hdf5_resources(filename):
                 U='V',
                 I='A'
             )
-        description += 'The index is the unix timestamp in nanoseconds. '
+        description += ' The index is the unix timestamp in nanoseconds. '
         field = dict(
             name=dset_name,
             type='number',
@@ -104,11 +132,12 @@ def create_metadata(folder):
     '''
     resources = []
     for filename in os.listdir(folder):
-        if not (filename.startswith('data') and filename.endswith('.hdf5')):
+        if not (filename.startswith(('data', 'weather', 'district_'))
+                and filename.endswith('.hdf5')):
             continue
         resources.append(get_hdf5_resources(os.path.join(folder, filename)))
     name = 'WPuQ household and heat pump electric load profiles'
-    idd = 'Daten DOI'
+    idd = r'10.5281/zenodo.4719836'
     licenses = list(
         [dict(
             name='CC-BY-4.0',
@@ -125,15 +154,31 @@ def create_metadata(folder):
         'transformer. Different temporal and spatial aggregations are '
         'available for conveniance.'
     )
-    homepage = 'Link zum Daten repository'
+    homepage = r'10.5281/zenodo.4719836'
     version = '1.0'
     contributors = list(
         [dict(
             title='Marlon Schlemminger',
-            email='schlemminger@solar.uni-hannover.de',
+            email='m.schlemminger@isfh.de',
             role='author',
             organization='Institute for Solar Energy Research in Hamelin'
-        )]
+        ),
+        dict(
+            title='Tobias Ohrdes',
+            email='ohrdes@isfh.de',
+            role='author',
+            organization='Institute for Solar Energy Research in Hamelin'
+        ),
+        dict(
+            title='Elisabeth Schneider',
+            role='contributor',
+            organization='Institute for Solar Energy Research in Hamelin'
+        ),
+        dict(
+            title='Michael Knoop',
+            role='contributor',
+            organization='Institute for Solar Energy Research in Hamelin'
+            )]
     )
     documentation = 'URL to paper'
     spatial = dict(
@@ -174,5 +219,5 @@ if __name__ == '__main__':
     quarter = 'Ohrberg'
     years = [2018, 2019, 2020]
     for year in years:
-        folder = os.path.join(os.getcwd(), f'{quarter}_{year}', 'resampled')
+        folder = os.path.join(os.getcwd(), 'data_to_publish', f'{year}')
         create_metadata(folder)

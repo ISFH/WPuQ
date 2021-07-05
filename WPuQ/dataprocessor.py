@@ -502,7 +502,7 @@ class Dataprocessor():
              validation['hs_abs'].columns.get_level_values(2),
              validation['hs_abs'].columns.get_level_values(3)],
             names=['measure', 'obj', 'feed', 'current', 'phase'])
-        self.compare_hourly_values(validation['hs_abs'], strfile=val_dir)
+        self.compare_aggregated_values(validation['hs_abs'], strfile=val_dir)
         
         # missing months to excel
         pd.Series(validation['ma']).reset_index().to_excel(
@@ -577,7 +577,7 @@ class Dataprocessor():
 
         '''
 
-        def build_hourly_imports(profile):
+        def build_imports(profile):
             '''
             Calculates imports from the overall profile. For apparent power,
             this is done via the power factor. Active power containts a
@@ -606,13 +606,19 @@ class Dataprocessor():
             profile_import = profile[profile > 0].fillna(0)
             return profile, profile_import
 
+        res = 'D'
+        # factor to go from power to energy
+        if res == 'D':
+            factor = 24
+        elif res == 'H':
+            factor = 1
         # absolute hourly sums for power and energy
-        profile, profile_import = build_hourly_imports(profile)
+        profile, profile_import = build_imports(profile)
         profile_energy = profile_energy.diff().fillna(0)
         profile_energy = profile_energy.dropna(axis=0, how='all')
-        power = (profile_import[profile_energy.columns].resample('1h').mean()
-                 / 1e3)
-        energy = profile_energy.resample('1h').sum()
+        power = (profile_import[profile_energy.columns].resample(res).mean()
+                 / 1e3 * factor)
+        energy = profile_energy.resample(res).sum()
         validation['hs_abs'][obj + '_' + feed] = pd.concat(
             [power, energy], keys=['Power', 'Energy'], axis=1
             )
@@ -790,7 +796,7 @@ class Dataprocessor():
             plt.show()
 
 
-    def compare_hourly_values(self, profiles, strfile=None):
+    def compare_aggregated_values(self, profiles, strfile=None):
         '''
         Validates the measurements of power vs. energetic measurements in
         hourly resolution. Plots their data quality as a scatter plot and
@@ -904,9 +910,15 @@ class Dataprocessor():
             ax.set_xlim(left=0)
             ax.set_ylim(bottom=0, top=ax.get_xlim()[1])
             ax.plot(ax.get_xlim(), ax.get_ylim(), ls='--', c='.3')
-        fig.text(0, 1 - y_fig / 2, 'Energy in kWh/h', va='center',
-                 rotation='vertical')
-        fig.text(0.5, 1 - y_fig - 0.06, 'Power in kWh/h', ha='center')
+        fig.text(0, 1 - y_fig / 2,
+                 r'$\frac{E(t_2)-E(t_1)}{t_2-t_1}$ in kWh/h', va='center',
+                 rotation='vertical', fontsize=22
+        )
+        fig.text(
+            0.5, 1 - y_fig - 0.05,
+            r'$\frac{1}{t_2-t_1} \int_{t_1}^{t_2} P(t) \,dt$ in kWh/h',
+            ha='center', fontsize=22
+        )
         perc_df.unstack().reset_index().to_excel(
             os.path.join(strfile, 'ys_rel_percentiles.xlsx'))
         # percentiles of actual hourly consumption
