@@ -906,6 +906,8 @@ class WPuQPlots():
         ax.tick_params(axis='x', labelsize=20)
         ax.set_xlim(0 - width, len(vals[0]) - 1 + width)
         ax.set_ylabel('Annual consumption in kWh/a')
+        ax.get_yaxis().set_major_formatter(matplotlib.ticker.FuncFormatter(
+            lambda x, p: format(int(x), ',')))
         plt.legend()
         if strfile:
             if os.path.isdir(strfile):
@@ -1001,6 +1003,8 @@ class WPuQPlots():
         lines2, labels2 = ax2.get_legend_handles_labels()
         ax.legend(lines + lines2, labels + labels2, loc='best')
         ax.set_ylabel(translation['y1'][language])
+        ax.get_yaxis().set_major_formatter(matplotlib.ticker.FuncFormatter(
+            lambda x, p: format(int(x), ',')))
         ax.set_xlabel('')
         ax2.set_ylabel(translation['y2'][language])
         # move ylim so that legend is visible
