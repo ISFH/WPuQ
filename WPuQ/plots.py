@@ -1,5 +1,6 @@
 from datetime import datetime as dt
 from calendar import month_abbr
+import datetime
 import os
 
 import h5py
@@ -21,6 +22,15 @@ font = {'size': 20}
 matplotlib.rc('font', **font)
 
 idx = pd.IndexSlice
+
+
+
+def tz_localize(index):
+    index = index.tz_localize(
+        'Europe/London', nonexistent='shift_forward', ambiguous='NaT')
+    index = index.tz_convert('Europe/Berlin')
+    return index
+
 
 
 class WPuQPlots():
@@ -220,6 +230,7 @@ class WPuQPlots():
                 obj = dset_name.split('/')[0]
                 reason = dset_name.split('/')[-1]
                 profile = pd.read_hdf(memento_filename, dset_name)
+                profile.index = pd.to_datetime(profile.index, unit='s')
                 df.loc[df.index.intersection(profile.values), obj] = reason
             # some objects are missing data for the whole year, but 2018 is
             # complete fortunately. We can therefore detect objects missing
@@ -455,8 +466,9 @@ class WPuQPlots():
         for direct in ['IMPORT', 'EXPORT']:
             col_name = f'{trans}_{phase}_{direct}'
             try:
-                energy[direct] = (pd.read_hdf(source_file_energy, dset_name)
-                                  [col_name])
+                profile = pd.read_hdf(source_file_energy, dset_name)
+                profile.index = pd.to_datetime(profile.index, unit='s')
+                energy[direct] = profile[col_name]
             except KeyError:
                 energy[direct] = 0
         energy = energy.fillna(0)
@@ -467,6 +479,7 @@ class WPuQPlots():
         power = pd.DataFrame(columns=['IMPORT', 'EXPORT'], index=energy.index)
         col_name = f'{trans}_{phase}'
         tmp = pd.read_hdf(source_file_power, dset_name)
+        tmp.index = pd.to_datetime(tmp.index, unit='s')
         if current == 'S':
             dset_name = f'{feed}/{direction}/ELECTRICITY_POWER_FACTOR_{phase}'
             pf = tmp[f'PF_{phase}']
@@ -566,8 +579,9 @@ class WPuQPlots():
                 dset_name = 'NO_PV/' + dset_name
         # power measurement
         cols_c = [c + '_' + phase for c in translation['combined']]
-        combined = pd.read_hdf(source_file, dset_name, columns=cols_c).sum(
-            axis=1)
+        combined = pd.read_hdf(source_file, dset_name, columns=cols_c)
+        combined.index = pd.to_datetime(combined.index, unit='s')
+        combined = combined.sum(axis=1)
         # individual measurements of I and U
         if phase == 'TOT':
             cols_i = [c + '_' + str(p) for c in translation['individual']
@@ -575,6 +589,7 @@ class WPuQPlots():
         else:
             cols_i = [c + '_' + phase for c in translation['individual']]
         indiv = pd.read_hdf(source_file, dset_name, columns=cols_i)
+        indiv.index = pd.to_datetime(indiv.index, unit='s')
         indiv.columns = indiv.columns.str.split('_', expand=True)
         indiv = indiv.xs('U', axis=1, level=0).mul(
             indiv.xs('I', axis=1, level=0), axis=1).mul(
@@ -709,6 +724,7 @@ class WPuQPlots():
         for dset_name in dset_names:
             try:
                 profile = pd.read_hdf(filename, dset_name)
+                profile.index = pd.to_datetime(profile.index, unit='s')
             except KeyError:
                 continue
             print(dt.now().strftime("%m/%d/%Y, %H:%M:%S") + ' Plotting ' +
@@ -741,8 +757,7 @@ class WPuQPlots():
                         n_objs += len(
                             file[dn + '/table'].attrs['objects_included'])
                     profile = profile / n_objs
-            profile.index = profile.index.tz_localize(
-                'Europe/Berlin', nonexistent='shift_forward', ambiguous='NaT')
+            profile.index = tz_localize(profile.index)
             day_name = profile.index.day_name()
             day_name = [dn if dn in ['Saturday', 'Sunday'] else 'Weekday'
                         for dn in day_name]
@@ -919,7 +934,8 @@ class WPuQPlots():
         else:
             plt.show()
 
-    def plot_daily_for_report(self, folder, language='de', strfile=None):
+    def plot_daily_for_report(
+            self, folder, language='de', ymax=None, strfile=None):
         '''
         Plots the active and apparent power of the transformer together with
         the outside temperature and the temperature in the district heating
@@ -953,19 +969,19 @@ class WPuQPlots():
             ),
             blind=dict(
                 en='Reactive energy',
-                de='Blindenergie'
+                de='Blindleistung'
             ),
             wirk=dict(
                 en='Active energy',
-                de='Wirkenergie'
+                de='Wirkleistung'
             ),
             y1=dict(
                 en='Energy in kWh/day',
-                de='Energie [kWh/Tag]'
+                de='Tagesgemittelte Leistung in kW'
             ),
             y2=dict(
                 en='Temperature in °C',
-                de='Temperatur [°C]'
+                de='Temperatur in °C'
             )
         )
         # get transformer data
@@ -974,17 +990,36 @@ class WPuQPlots():
         columns = ['P_TOT', 'Q_TOT']
         transformer = pd.read_hdf(
             os.path.join(folder, source_file), dset_name, columns=columns)
-        transformer = transformer.resample('D').mean() / 1e3 * 24
+        transformer.index = pd.to_datetime(transformer.index, unit='s')
+        transformer.index = tz_localize(transformer.index)
+        transformer = transformer.resample('D').mean() / 1e3
+        if language == 'en':
+            transformer = transformer * 24
         transformer[transformer < 0] = 0
         # get district heating data
-        source_file = 'dh_grid.hdf5'
-        dset_name = 'DH_GRID/IN/HEAT_TEMPERATURE_FLOW'
-        dh = pd.read_hdf(os.path.join(folder, source_file), dset_name)
+        try:
+            source_file = 'dh_grid.hdf5'
+            dset_name = 'DH_GRID/IN/HEAT_TEMPERATURE_FLOW'
+            dh = pd.read_hdf(os.path.join(folder, source_file), dset_name)
+        except FileNotFoundError:
+            source_file = 'DISTRICT_HEATING_GRID.hdf5'
+            dset_name = 'DISTRICT_HEATING_GRID/IN/HEAT_TEMPERATURE_FLOW'
+            parent = os.path.abspath(os.path.join(folder, os.pardir))
+            dh = pd.read_hdf(os.path.join(parent, source_file), dset_name)
+        dh.index = pd.to_datetime(dh.index, unit='s')
+        dh.index = tz_localize(dh.index)
         dh = dh.resample('D').mean()
         # get temperature data
-        source_file = 'weather.hdf5'
         dset_name = 'WEATHER_SERVICE/IN/WEATHER_TEMPERATURE_TOTAL'
-        weather = pd.read_hdf(os.path.join(folder, source_file), dset_name)
+        try:
+            source_file = 'weather.hdf5'
+            weather = pd.read_hdf(os.path.join(folder, source_file), dset_name)
+        except FileNotFoundError:
+            source_file = 'WEATHER_STATION_1.hdf5'
+            parent = os.path.abspath(os.path.join(folder, os.pardir))
+            weather = pd.read_hdf(os.path.join(parent, source_file), dset_name)
+        weather.index = pd.to_datetime(weather.index, unit='s')
+        weather.index = tz_localize(weather.index)
         weather = weather.resample('D').mean()
         # total data
         data = pd.concat([transformer, dh, weather], axis=1)
@@ -1008,19 +1043,23 @@ class WPuQPlots():
         ax.set_xlabel('')
         ax2.set_ylabel(translation['y2'][language])
         # move ylim so that legend is visible
-        ax2.set_ylim(top=35)
+        ax2.set_ylim((-6, 35))
+        if ymax:
+            ax.set_ylim(top=ymax)
+        year = data.index.year[100]
+        ax.set_xlim([datetime.date(year, 1, 1), datetime.date(year, 12, 1)])
         if strfile:
             if os.path.isdir(strfile):
                 strfile = os.path.join(strfile, 'daily_plot_wpuq_report.png')
             if os.path.isfile(strfile):
                 os.remove(strfile)
-            plt.savefig(strfile, bbox_inches='tight')
+            plt.savefig(strfile, bbox_inches='tight', dpi=300)
             plt.close()
         else:
             plt.show()
 
     def plot_annual_consumption_heat_pump_for_report(
-            self, folder, method, strfile=None):
+            self, folder, method, language='de', strfile=None):
         '''
         Detects three operation modes (heat pump, heating rod and pumps only)
         from the heat pump load curve.
@@ -1041,10 +1080,21 @@ class WPuQPlots():
 
         '''
 
+        translation = dict(
+            comp=dict(
+                en='Compressor operation',
+                de='Kompressorbetrieb'),
+            rod=dict(
+                en='Heating rod operation',
+                de='Heizstabbetrieb'),
+            pumps=dict(
+                en='Stand-by operation',
+                de='Stand-By-Betrieb')
+        )
         print(dt.now().strftime("%m/%d/%Y, %H:%M:%S") + ' Detecting heat pump '
               'operation modes.')
-        total = pd.DataFrame(index=['obj', 'Kompressorbetrieb',
-                                    'Heizstabbetrieb', 'Stand-By-Betrieb'])
+        index = ['obj'] + [val[language] for key, val in translation.items()]
+        total = pd.DataFrame(index=index)
         missing = pd.Series(name='missing')
         filename = os.path.join(folder, 'data_10s.hdf5')
         file = h5py.File(filename, 'r')
@@ -1058,52 +1108,56 @@ class WPuQPlots():
             missing.loc[obj] = 1
             print(dt.now().strftime("%m/%d/%Y, %H:%M:%S") + '\t ' + obj)
             profile = pd.read_hdf(filename, dset_name).set_index('index')
-            profile.index = pd.to_datetime(profile.index)
+            profile.index = pd.to_datetime(profile.index, unit='s')
             # mark buildings with nans. Special treatment for 2018
             if '2018' in folder:
-                if profile.loc[profile.index.month > 5, 'S_TOT'].isna().any():
+                if profile.loc[profile.index.month > 5, 'P_TOT'].isna().any():
                     missing.loc[obj] = 0.5
             else:
-                if profile['S_TOT'].isna().any():
+                if profile['P_TOT'].isna().any():
                     missing.loc[obj] = 0.5
-            # assumption that a heat pump consumption larger than 3 kW
+            profile = profile[['P_TOT', 'S_TOT', 'Q_TOT']]
+            # assumption that a heat pump consumption larger than 4 kW
             # means heating rod operation
-            if method == 'larger 3kW':
-                profile = profile[['S_TOT']]
-                profile.loc[profile['S_TOT'] < 3000, 'operation_mode'] = \
-                    'Kompressorbetrieb'
+            if method == 'larger 4kW':
+                profile.loc[profile['P_TOT'] < 4000, 'operation_mode'] = \
+                    translation['comp'][language]
             # assumption that the heating rod is an ohmic resistor, meaning
             # that apparent and active power are equal if the heat pump
             # runs in heating rod operation mode
             elif method == 'Power Factor':
-                profile = profile[['P_TOT', 'S_TOT']]
                 profile.loc[
-                    (profile['S_TOT'] - profile['P_TOT']) > 10,
-                    'operation_mode'] = 'Kompressorbetrieb'
+                    (profile['P_TOT'] > 100) & (profile['Q_TOT'] > 100),
+                    'operation_mode'] = translation['comp'][language]
             # assumption that consumption < 100 W is pumps only
-            profile.loc[profile['S_TOT'] < 100, 'operation_mode'] = \
-                'Stand-By-Betrieb'
-            profile['operation_mode'].fillna('Heizstabbetrieb', inplace=True)
+            profile.loc[profile['P_TOT'] < 100, 'operation_mode'] = \
+                translation['pumps'][language]
+            profile['operation_mode'].fillna(
+                translation['rod'][language], inplace=True)
             profile = profile.groupby('operation_mode').sum()
             profile.loc['obj'] = obj
-            total = pd.concat([total, profile['S_TOT']], axis=1)
+            total = pd.concat([total, profile['P_TOT']], axis=1)
         total = total.T.reset_index(drop=True)
         total = total.set_index('obj')
         total = total.merge(missing, left_index=True, right_index=True)
         total['building_nr'] = total.index.str.split('(\d+)').str[1].astype(int)
         total = total.sort_values(by='building_nr', ascending=True).set_index(
             'building_nr')
-        cols = ['Stand-By-Betrieb', 'Kompressorbetrieb', 'Heizstabbetrieb']
+        cols = [val[language] for key, val in translation.items()]
         total[cols] = total[cols] / 360 / 1e6
         # plot
-        colors = ['gainsboro', 'yellowgreen', 'orangered']
+        colors = ['yellowgreen', 'orangered', 'gainsboro']
         fig, ax = plt.subplots(figsize=(16, 9))
         total.loc[total['missing'] == 1, cols].plot(
             ax=ax, kind='bar', stacked=True, color=colors)
         handles, labels = ax.get_legend_handles_labels()
         ax.legend(handles[::-1], labels[::-1], loc='best')
-        ax.set_ylabel('Energie [MWh/a]')
-        ax.set_xlabel('Gebäudenummer')
+        if language == 'de':
+            ax.set_ylabel('Wirkenergie [MWh/a]')
+            ax.set_xlabel('Gebäudenummer')
+        elif language == 'en':
+            ax.set_ylabel('Active energy [MWh/a]')
+            ax.set_xlabel('Building number')
         ax.tick_params(axis='x', rotation=90)
         if strfile:
             if os.path.isdir(strfile):
@@ -1112,6 +1166,7 @@ class WPuQPlots():
             if os.path.isfile(strfile):
                 os.remove(strfile)
             plt.savefig(strfile, bbox_inches='tight', dpi=300)
+            total.to_csv(strfile.replace('.png', '.csv'))
             plt.close()
 
     def plot_annual_consumption_household_for_report(
@@ -1137,7 +1192,7 @@ class WPuQPlots():
               + ' Plotting annual household consumption.')
         total = pd.Series(name='Haushalt')
         missing = pd.Series(name='missing')
-        filename = os.path.join(folder, 'data_10s.hdf5')
+        filename = os.path.join(folder, 'resampled', 'data_10s.hdf5')
         file = h5py.File(filename, 'r')
         visitor = H5ls()
         file.visititems(visitor)
@@ -1181,4 +1236,138 @@ class WPuQPlots():
             if os.path.isfile(strfile):
                 os.remove(strfile)
             plt.savefig(strfile, bbox_inches='tight', dpi=300)
+            plt.close()
+
+    def plot_annual_consumption_heat_pump_and_household_for_report(
+            self, folder, language='de', strfile=None):
+        '''
+        Detects three operation modes (heat pump, heating rod and pumps only)
+        from the heat pump load curve.
+
+        Parameters
+        ----------
+        folder : str
+            The home folder containing both the validation and resampled
+            folder.
+        method : str
+            The method used to seperate heating rod from heat pump operation
+        strfile : str
+            Plots the data if a path to save a plot is given.
+            The default is None.
+
+        Returns
+        -------
+
+        '''
+
+        translation = dict(
+            pumps=dict(
+                en='Stand-by operation',
+                de='Stand-By-Betrieb'),
+            comp=dict(
+                en='Compressor operation',
+                de='Kompressorbetrieb'),
+            rod=dict(
+                en='Heating rod operation',
+                de='Heizstabbetrieb'),
+            hh=dict(
+                en='Household',
+                de='Haushalt')
+        )
+        print(dt.now().strftime("%m/%d/%Y, %H:%M:%S") + ' Detecting heat pump '
+              'operation modes.')
+        index = ['obj'] + [val[language] for key, val in translation.items()]
+        total = pd.DataFrame(index=index)
+        missing = dict()
+        filename = os.path.join(folder, 'data_10s.hdf5')
+        file = h5py.File(filename, 'r')
+        visitor = H5ls()
+        file.visititems(visitor)
+        dset_names = visitor.names
+        for dset_name in dset_names:
+            if not 'HEATPUMP' in dset_name and not 'HOUSEHOLD' in dset_name:
+                continue
+            obj = dset_name.split('/')[1]
+            feed = dset_name.split('/')[2]
+            if not obj in missing:
+                missing[obj] = dict()
+            missing[obj][feed] = 1
+            print(dt.now().strftime("%m/%d/%Y, %H:%M:%S") + '\t ' + obj)
+            profile = pd.read_hdf(filename, dset_name).set_index('index')
+            profile.index = pd.to_datetime(profile.index, unit='s')
+            # mark buildings with nans. Special treatment for 2018
+            if '2018' in folder:
+                if profile.loc[profile.index.month > 5, 'P_TOT'].isna().any():
+                    missing[obj][feed] = 0.5
+            else:
+                if profile['P_TOT'].isna().any():
+                    missing[obj][feed] = 0.5
+            profile = profile[['P_TOT', 'S_TOT', 'Q_TOT']]
+            # assumption that a heat pump consumption larger than 4 kW
+            # means heating rod operation
+            if 'HEATPUMP' in dset_name:
+                profile.loc[profile['P_TOT'] < 4000, 'operation_mode'] = \
+                    translation['comp'][language]
+                # assumption that consumption < 100 W is pumps only
+                profile.loc[profile['P_TOT'] < 100, 'operation_mode'] = \
+                    translation['pumps'][language]
+                profile['operation_mode'].fillna(
+                    translation['rod'][language], inplace=True)
+            else:
+                profile.loc[:, 'operation_mode'] = translation['hh'][language]
+            profile = profile.groupby('operation_mode').sum()
+            profile.loc['obj'] = obj
+            total = pd.concat([total, profile['P_TOT']], axis=1)
+        missing = pd.DataFrame.from_dict(missing).stack().swaplevel(0, 1)
+        miss_for_merge = missing.groupby(level=0).sum()
+        miss_for_merge.name = 'missing'
+        total = total.T.reset_index(drop=True)
+        total = total.set_index('obj')
+        total = total.merge(miss_for_merge, left_index=True, right_index=True)
+        # merge household and heat pump rows
+        total = total.astype(
+            {v[language]: 'float64' for k, v in translation.items()})
+        total = total.groupby(level=0).sum()
+        total['nr'] = total.index.str.split('(\d+)').str[1].astype(int)
+        total['building_nr'] = total.index
+        total = total.sort_values(by='nr', ascending=True).set_index(
+            'building_nr')
+        total = total.drop('nr', axis=1)
+        cols = [val[language] for key, val in translation.items()]
+        total[cols] = total[cols] / 360 / 1e3
+        # plot
+        fig, ax = plt.subplots(figsize=(16, 9))
+        # heat pump
+        colors = ['gainsboro', 'yellowgreen', 'orangered']
+        cols = [val[language] for key, val in translation.items()
+                if key != 'hh']
+        total.loc[total['missing'] == 4, cols].plot(
+            ax=ax, kind='bar', stacked=True, color=colors, position=1,
+            width=0.4
+        )
+        # household
+        total.loc[total['missing'] == 4, translation['hh'][language]].plot(
+            ax=ax, kind='bar', color='cadetblue', position=0,
+            width=0.4, edgecolor='white', linewidth=1
+        )
+        handles, labels = ax.get_legend_handles_labels()
+        ax.legend(handles[::-1], labels[::-1], loc='best')
+        if language == 'de':
+            ax.set_ylabel('Wirkenergie [kWh/a]')
+        elif language == 'en':
+            ax.set_ylabel('Annual active energy consumption in kWh/a')
+        ax.set_xlabel('')
+        ax.tick_params(axis='x', rotation=90)
+        ax.tick_params(axis='y', rotation=30)
+        ax.get_yaxis().set_major_formatter(matplotlib.ticker.FuncFormatter(
+            lambda x, p: format(int(x), ',')))
+        ax.set_xlim(left=ax.get_xlim()[0] - 0.25)
+        if strfile:
+            if os.path.isdir(strfile):
+                strfile = os.path.join(
+                    strfile, 'heat_pump_operation_wpuq_report.png')
+            if os.path.isfile(strfile):
+                os.remove(strfile)
+            plt.savefig(strfile, bbox_inches='tight', dpi=300)
+            total.to_csv(strfile.replace('.png', '.csv'))
             plt.close()

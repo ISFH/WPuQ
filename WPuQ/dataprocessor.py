@@ -155,8 +155,7 @@ class Dataprocessor():
         folder_res = os.path.join(folder, 'resampled')
         Path(folder_res).mkdir(exist_ok=True, parents=True)
         for file in os.listdir(folder_res):
-            if (file.endswith('.hdf5')
-                    or (file.split('_')[1].split('.')[0] in time_res_list)):
+            if file.endswith('.hdf5'):
                 os.remove(os.path.join(folder_res, file))
         feed_replace = {
             'REACTIVE_POWER': 'Q',
@@ -262,10 +261,15 @@ class Dataprocessor():
                         # resample profile
                         profile_res = profile.resample(time_res).mean()
                         profile_res.name = col_name
+                        profile_res.index = (
+                            (profile_res.index - pd.Timestamp("1970-01-01"))
+                            // pd.Timedelta('1s')
+                        )
                         # create file
                         target_filename = os.path.join(
                             folder, 'resampled', target_prepend + 'data_'
-                            + time_res + '.hdf5')
+                            + time_res + '.hdf5'
+                        )
                         # we need to append columns which pytables does not
                         # support natively. Therefore, read the existing data,
                         # append a column and write it back
@@ -316,7 +320,8 @@ class Dataprocessor():
                 os.remove(os.path.join(folder_res, file))
         # spatial aggregation
         name_exclude = ['HS1', 'PV1', 'WS1', 'WEATHER_ISFH']
-        target_filename = os.path.join(folder_res, 'data_spatial.hdf5')
+        target_filename = os.path.join(
+            folder_res, 'data_spatial.hdf5')
         included = dict(
             WITH_PV=dict(
                 HOUSEHOLD={
@@ -368,6 +373,7 @@ class Dataprocessor():
                 print(dt.now().strftime('%m/%d/%Y, %H:%M:%S')
                      + f'\t Dataset {dset_name_orig}.')
                 profile = pd.read_hdf(source_file_path, dset_name_orig)
+                profile.index = pd.to_datetime(profile.index, unit='s')
                 cols = profile.columns.intersection(
                     ['P_TOT', 'Q_TOT', 'P_TOT_WITH_PV'])
                 profile = profile[cols]
@@ -405,6 +411,7 @@ class Dataprocessor():
                 # append a column and write it back
                 try:
                     old = pd.read_hdf(target_filename, dset_name_new)
+                    old.index = pd.to_datetime(old.index, unit='s')
                     profile = old + profile
                 # in the beginning, the file might not exists or the
                 # node might not exist
@@ -451,9 +458,10 @@ class Dataprocessor():
         validation = dict(ts_abs=dict(), hs_abs=dict(), ma=dict())
         val_dir = os.path.join(folder, 'validation')
         Path(val_dir).mkdir(exist_ok=True)
-        source_file = os.path.join(folder, 'resampled', 'data_10s.hdf5')
+        source_file = os.path.join(
+            folder, 'resampled', f'data_10s.hdf5')
         source_file_energy = os.path.join(
-            folder, 'resampled', 'energy_data_10s.hdf5')
+            folder, 'resampled', f'energy_data_10s.hdf5')
         file = h5py.File(source_file, 'r')
         visitor = H5ls()
         file.visititems(visitor)
@@ -468,11 +476,13 @@ class Dataprocessor():
             obj = dset_name.split('/')[1]
             feed = dset_name.split('/')[2]
             profile = pd.read_hdf(source_file, dset_name)
+            profile.index = pd.to_datetime(profile.index, unit='s')
             if 'P_TOT_WITH_PV' in profile.columns:
                 profile = profile.drop('P_TOT', axis=1)
                 profile = profile.rename(columns={'P_TOT_WITH_PV': 'P_TOT'})
             profile.columns = profile.columns.str.split('_', expand=True)
             profile_energy = pd.read_hdf(source_file_energy, dset_name)
+            profile_energy.index = pd.to_datetime(profile_energy.index, unit='s')
             cols = profile_energy.columns.str.split('_', expand=True)
             profile_energy.columns = pd.MultiIndex.from_tuples(
                 [('P' if col[0][0] == 'E' else col[0][0], col[1], col[2])
@@ -539,6 +549,7 @@ class Dataprocessor():
         filename = os.path.join(folder, 'resampled', 'data_10s.hdf5')
         dset_name = 'MISC/PV1/PV/INVERTER/SOUTH'
         profile_pv = pd.read_hdf(filename, dset_name)['P_TOT']
+        profile_pv.index = pd.to_datetime(profile_pv.index, unit='s')
         # the panels at the ISFH have 14.5 kWp. Linearly adjust this to the
         # actual installed capacity of the house
         profile_pv = profile_pv / 14.5 * installed_capacity
@@ -675,30 +686,31 @@ class Dataprocessor():
             if not 'HEATPUMP' in dset_name:
                 continue
             obj = dset_name.split('/')[1]
-            for method in ['larger 3kW', 'Power Factor']:
+            for method in ['larger 4kW', 'Power Factor']:
                 profile = pd.read_hdf(filename, dset_name).set_index('index')
-                # assumption that a heat pump consumption larger than 3 kW
+                profile.index = pd.to_datetime(profile.index, unit='s')
+                # assumption that a heat pump consumption larger than 4 kW
                 # means heating rod operation
-                if method == 'larger 3kW':
-                    profile = profile[['S_TOT']]
-                    profile.loc[profile['S_TOT'] < 3000, 'operation_mode'] = \
+                if method == 'larger 4kW':
+                    profile = profile[['P_TOT']]
+                    profile.loc[profile['P_TOT'] < 4000, 'operation_mode'] = \
                         'Heat Pump'
                 # assumption that the heating rod is an ohmic resistor, meaning
                 # that apparent and active power are equal if the heat pump
                 # runs in heating rod operation mode
                 elif method == 'Power Factor':
-                    profile = profile[['P_TOT', 'S_TOT']]
+                    profile = profile[['P_TOT', 'Q_TOT']]
                     profile.loc[
-                        (profile['S_TOT'] - profile['P_TOT']) > 10,
+                        (profile['P_TOT'] > 100) & (profile['Q_TOT'] > 100),
                         'operation_mode'] = 'Heat Pump'
                 # assumption that consumption < 100 W is pumps only
-                profile.loc[profile['S_TOT'] < 100, 'operation_mode'] = \
+                profile.loc[profile['P_TOT'] < 100, 'operation_mode'] = \
                     'Pumps Only'
                 profile['operation_mode'].fillna('Heating Rod', inplace=True)
                 profile = profile.groupby('operation_mode').sum()
                 profile.loc['method'] = method
                 profile.loc['obj'] = obj
-                total = pd.concat([total, profile['S_TOT']], axis=1)
+                total = pd.concat([total, profile['P_TOT']], axis=1)
         total = total.T.reset_index(drop=True)
         total.to_excel(
             os.path.join(folder_val, 'heat_pump_operation.xlsx'), index=False)
