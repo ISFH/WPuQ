@@ -5,6 +5,8 @@
 
 ## Description
 This package includes the code used to download, process, validate and visualize the measurement data of the WPuQ project. 
+The dataset comprises residential electricity household and heat pump load profiles, measured in 38 single-family houses in Northern Germany.
+Available data includes data per household of apparent, active and reactive power (W), voltage (V), current (A) and the power factor (no unit) in 10 seconds to 60 minutes temporal resolution from May 2018 to the end of 2020.
 
 ## Install instructions
 Clone this repository to a folder of your choice:
@@ -27,4 +29,5 @@ Downloading the original data requires an API key, which we unfortunately can no
  
 
 ## Documentation
-A scientific documentation of the dataset can be found under this DOI:
+A scientific documentation of the dataset can be found under this DOI: [https://doi.org/10.1038%2Fs41597-022-01156-1]
+
